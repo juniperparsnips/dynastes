@@ -2,74 +2,84 @@
 // #![deny(warnings)]
 // #![warn(missing_docs)]
 
-use std::{marker::PhantomData, time::Duration};
+use std::{marker::PhantomData, ops::Deref, time::Duration};
 
 use bevy::{
     app::{Plugin, Update},
-    asset::{AssetApp, Assets, Handle},
+    asset::{Asset, AssetApp, Assets, Handle},
     log::{debug, error, trace},
     prelude::{Commands, Component, Deref, DerefMut, Entity, Query, Res, Without},
     reflect::TypePath,
     sprite::Sprite,
     time::{Time, Timer, TimerMode},
 };
-use state_machine::{AnimationStateMachine, NextFrame, State};
-/// The base logic for switching between animation states
-pub mod state_machine;
+pub use state_machine::*;
 
-pub struct DynastesPlugin<State> {
-    phantom: PhantomData<State>,
+/// The base logic for switching between animation states
+mod state_machine;
+
+pub struct DynastesPlugin<T> {
+    phantom: PhantomData<T>,
 }
 
-impl<S> Default for DynastesPlugin<S> {
+// Don't use derive because it requires S, M : Default
+impl<T> Default for DynastesPlugin<T> {
     fn default() -> Self {
-        DynastesPlugin {
+        Self {
             phantom: PhantomData::default(),
         }
     }
 }
 
-impl<S> Plugin for DynastesPlugin<S>
+impl<S, T> Plugin for DynastesPlugin<T>
 where
-    S: State + Send + Sync + TypePath + 'static,
+    S: State + Send + Sync + TypePath,
+    T: StateSystem<State = S> + Asset,
 {
     fn build(&self, app: &mut bevy::prelude::App) {
-        app.init_asset::<AnimationStateMachine<S>>();
-        app.add_systems(Update, run_animations::<S>);
-        app.add_systems(Update, render_on_load::<S>);
+        app.init_asset::<AnimationStateMachine<T>>();
+        app.add_systems(Update, run_animations::<S, T>);
+        app.add_systems(Update, render_on_load::<S, T>);
     }
 }
 
 #[derive(Component)]
-pub struct Dynastes<S>(pub Handle<AnimationStateMachine<S>>)
+pub struct Dynastes<T>(pub Handle<AnimationStateMachine<T>>)
 where
-    S: Send + Sync + TypePath;
+    T: Asset;
 
-#[derive(Component)]
+#[derive(Component, Deref, DerefMut)]
 struct StateName(String);
 
 #[derive(Component, Deref, DerefMut)]
 struct AnimationTimer(Timer);
 
-fn run_animations<S>(
+fn run_animations<S, T>(
     time: Res<Time>,
     mut query: Query<(
-        &Dynastes<S>,
+        &Dynastes<T>,
         &mut StateName,
         &mut AnimationTimer,
         &mut Sprite,
     )>,
-    aseprite_assets: Res<Assets<AnimationStateMachine<S>>>,
+    state_machines: Res<Assets<AnimationStateMachine<T>>>,
+    state_metadata: Res<Assets<T>>,
 ) where
     S: State + Send + Sync + TypePath,
+    T: StateSystem<State = S> + Asset,
 {
     for (dynastes, mut state_name, mut timer, mut sprite) in &mut query {
-        let Some(state_machine) = aseprite_assets.get(&dynastes.0) else {
+        let Some(state_machine) = state_machines.get(&dynastes.0) else {
             error!("Dynastes state machine '{:?}' was not loaded!", dynastes.0);
             continue;
         };
 
-        let Some(state_info) = state_machine.states.get(&state_name.0) else {
+        let Some(metadata) = state_metadata.get(&state_machine.states) else {
+            debug!("State metadata was not loaded");
+            continue;
+        };
+
+        let Some(state) = metadata.state(&state_name.0) else {
             error!(
                 "Dynastes state machine did not have current state {}",
                 state_name.0
@@ -92,12 +102,20 @@ fn run_animations<S>(
                 );
             }
 
-            match state_info.state.next_frame(atlas) {
+            match state.next_frame(atlas) {
                 NextFrame::NextState => {
-                    if let Some(next_state_name) = &state_info.next_state {
+                    let Some(edge) = state_machine.edges.get(&state_name.0) else {
+                        error!(
+                            "Dynastes state machine did not have edge for state {}",
+                            state_name.0
+                        );
+                        continue;
+                    };
+
+                    if let Some(next_state_name) = edge {
                         trace!("Next state: {next_state_name}");
 
-                        let Some(next_info) = state_machine.states.get(next_state_name) else {
+                        let Some(next_info) = metadata.state(next_state_name) else {
                             error!(
                                 "Dynastes state machine did not have next state {next_state_name}",
                             );
@@ -121,11 +139,11 @@ fn run_animations<S>(
                             Timer::new(Duration::from_millis(first_duration), TimerMode::Repeating);
                     } else {
                         trace!("Repeat state: {}", state_name.0);
-                        let start = state_info.first();
+                        let start = state.first();
                         atlas.index = start;
 
                         // yes, this is the exact same as below but it's not worth making a function imo
-                        let Some(duration) = state_info.duration(start) else {
+                        let Some(duration) = state.duration(start) else {
                             error!(
                                 "Frame {start} does not have duration for state {}",
                                 state_name.0
@@ -145,7 +163,7 @@ fn run_animations<S>(
                 }
                 NextFrame::FrameIndex(index) => {
                     atlas.index = index;
-                    let Some(duration) = state_info.duration(index) else {
+                    let Some(duration) = state.duration(index) else {
                         error!(
                             "Frame {index} does not have duration for state {}",
                             state_name.0
@@ -160,20 +178,27 @@ fn run_animations<S>(
     }
 }
 
-fn render_on_load<S>(
+fn render_on_load<S, M>(
     mut commands: Commands,
-    mut unloaded: Query<(Entity, &Dynastes<S>), Without<Sprite>>,
-    aseprite_assets: Res<Assets<AnimationStateMachine<S>>>,
+    mut unloaded: Query<(Entity, &Dynastes<M>), Without<Sprite>>,
+    state_machines: Res<Assets<AnimationStateMachine<M>>>,
+    state_metadata: Res<Assets<M>>,
 ) where
     S: State + Send + Sync + TypePath,
+    M: StateSystem<State = S> + Asset,
 {
     for (entity, dynastes) in &mut unloaded {
-        let Some(state_machine) = aseprite_assets.get(&dynastes.0) else {
+        let Some(state_machine) = state_machines.get(&dynastes.0) else {
             // Not loaded
             continue;
         };
 
-        let Some(state_info) = state_machine.default_state() else {
+        let Some(metadata) = state_metadata.get(&state_machine.states) else {
+            debug!("State metadata was not loaded");
+            continue;
+        };
+
+        let Some(state_info) = metadata.state(&state_machine.default_state_name) else {
             error!(
                 "Dynastes did not have default state {}",
                 state_machine.default_state_name
@@ -188,7 +213,7 @@ fn render_on_load<S>(
         };
 
         commands.entity(entity).insert((
-            Sprite::from_atlas_image(state_machine.image.clone(), state_info.atlas().clone()),
+            Sprite::from_atlas_image(metadata.image().clone(), state_info.atlas().clone()),
             StateName(state_machine.default_state_name.clone()),
             AnimationTimer(Timer::new(
                 Duration::from_millis(first_duration),
