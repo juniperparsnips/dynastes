@@ -50,7 +50,7 @@ where
     T: Asset;
 
 #[derive(Component, Deref, DerefMut)]
-struct StateName(String);
+pub struct StateName(String);
 
 #[derive(Component, Deref, DerefMut)]
 struct AnimationTimer(Timer);
