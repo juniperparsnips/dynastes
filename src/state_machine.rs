@@ -48,9 +48,16 @@ pub struct AnimationStateMachineSerde {
     pub edges: HashMap<String, Option<String>>,
 }
 
-#[derive(Default)]
 pub struct DynastesLoader<T> {
     phantom: PhantomData<T>,
+}
+
+impl<T> Default for DynastesLoader<T> {
+    fn default() -> Self {
+        Self {
+            phantom: PhantomData::default(),
+        }
+    }
 }
 
 #[non_exhaustive]

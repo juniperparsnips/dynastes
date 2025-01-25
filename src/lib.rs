@@ -37,9 +37,10 @@ where
     T: StateSystem<State = S> + Asset,
 {
     fn build(&self, app: &mut bevy::prelude::App) {
-        app.init_asset::<AnimationStateMachine<T>>();
-        app.add_systems(Update, run_animations::<S, T>);
-        app.add_systems(Update, render_on_load::<S, T>);
+        app.init_asset::<AnimationStateMachine<T>>()
+            .init_asset_loader::<DynastesLoader<T>>()
+            .add_systems(Update, run_animations::<S, T>)
+            .add_systems(Update, render_on_load::<S, T>);
     }
 }
 
