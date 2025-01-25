@@ -36,6 +36,7 @@ fn setup_animations(mut commands: Commands, asset_server: Res<AssetServer>) {
     states.insert(
         "Idle".to_string(),
         SomeState {
+            name: "Idle".to_string(),
             first: 26,
             last: 51,
             durations: vec![66; 26],
@@ -45,6 +46,7 @@ fn setup_animations(mut commands: Commands, asset_server: Res<AssetServer>) {
     states.insert(
         "Walk".to_string(),
         SomeState {
+            name: "Walk".to_string(),
             first: 0,
             last: 9,
             durations: vec![66; 10],

@@ -5,6 +5,7 @@ use dynastes::{State, StateSystem};
 
 #[derive(Debug, TypePath)]
 pub struct SomeState {
+    pub name: String,
     pub first: usize,
     pub last: usize,
     pub durations: Vec<u64>,
@@ -12,6 +13,10 @@ pub struct SomeState {
 }
 
 impl State for SomeState {
+    fn name(&self) -> &str {
+        &self.name
+    }
+
     fn first(&self) -> usize {
         self.first
     }

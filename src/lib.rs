@@ -2,13 +2,13 @@
 // #![deny(warnings)]
 // #![warn(missing_docs)]
 
-use std::{marker::PhantomData, ops::Deref, time::Duration};
+use std::{marker::PhantomData, time::Duration};
 
 use bevy::{
     app::{Plugin, Update},
     asset::{Asset, AssetApp, Assets, Handle},
-    log::{debug, error, trace},
-    prelude::{Commands, Component, Deref, DerefMut, Entity, Query, Res, Without},
+    log::{debug, error},
+    prelude::{Commands, Component, Entity, Query, Res, Without},
     reflect::TypePath,
     sprite::Sprite,
     time::{Time, Timer, TimerMode},
@@ -49,135 +49,61 @@ pub struct Dynastes<T>(pub Handle<AnimationStateMachine<T>>)
 where
     T: Asset;
 
-#[derive(Component, Deref, DerefMut)]
-pub struct StateName(String);
-
-#[derive(Component, Deref, DerefMut)]
-struct AnimationTimer(Timer);
-
 fn run_animations<S, T>(
     time: Res<Time>,
     mut query: Query<(
         &Dynastes<T>,
         &mut StateName,
+        &mut StateControl,
         &mut AnimationTimer,
         &mut Sprite,
     )>,
     state_machines: Res<Assets<AnimationStateMachine<T>>>,
-    state_metadata: Res<Assets<T>>,
+    state_systems: Res<Assets<T>>,
 ) where
     S: State + Send + Sync + TypePath,
     T: StateSystem<State = S> + Asset,
 {
-    for (dynastes, mut state_name, mut timer, mut sprite) in &mut query {
-        let Some(state_machine) = state_machines.get(&dynastes.0) else {
-            error!("Dynastes state machine '{:?}' was not loaded!", dynastes.0);
-            continue;
-        };
+    let _: Vec<()> = query
+        .iter_mut()
+        .filter_map(
+            |(dynastes, mut state_name, mut state_control, mut timer, mut sprite)| {
+                let state_machine = state_machines.get(&dynastes.0).or_else(|| {
+                    error!("Dynastes state machine '{:?}' is not loaded!", dynastes.0);
+                    None
+                })?;
 
-        let Some(metadata) = state_metadata.get(&state_machine.states) else {
-            debug!("State metadata was not loaded");
-            continue;
-        };
+                let state_system = state_systems.get(&state_machine.states).or_else(|| {
+                    debug!("State system is not loaded");
+                    None
+                })?;
 
-        let Some(state) = metadata.state(&state_name.0) else {
-            error!(
-                "Dynastes state machine did not have current state {}",
-                state_name.0
-            );
-            continue;
-        };
+                timer.tick(time.delta());
 
-        timer.tick(time.delta());
-
-        if timer.just_finished() {
-            let Some(atlas) = &mut sprite.texture_atlas else {
-                debug!("Sprite for dynastes did not have texture atlas");
-                continue;
-            };
-
-            if timer.times_finished_this_tick() > 1 {
-                debug!(
-                    "Dynastes missed {} frames",
-                    timer.times_finished_this_tick()
-                );
-            }
-
-            match state.next_frame(atlas) {
-                NextFrame::NextState => {
-                    let Some(edge) = state_machine.edges.get(&state_name.0) else {
-                        error!(
-                            "Dynastes state machine did not have edge for state {}",
-                            state_name.0
-                        );
-                        continue;
-                    };
-
-                    if let Some(next_state_name) = edge {
-                        trace!("Next state: {next_state_name}");
-
-                        let Some(next_info) = metadata.state(next_state_name) else {
-                            error!(
-                                "Dynastes state machine did not have next state {next_state_name}",
-                            );
-                            continue;
-                        };
-
-                        let first = next_info.first();
-                        let Some(first_duration) = next_info.duration(first) else {
-                            error!(
-                                "Frame {first} does not have duration for state {next_state_name}",
-                            );
-                            continue;
-                        };
-
-                        let mut new_atlas = next_info.atlas().clone();
-                        new_atlas.index = first;
-
-                        sprite.texture_atlas = Some(new_atlas);
-                        state_name.0 = next_state_name.clone();
-                        timer.0 =
-                            Timer::new(Duration::from_millis(first_duration), TimerMode::Repeating);
-                    } else {
-                        trace!("Repeat state: {}", state_name.0);
-                        let start = state.first();
-                        atlas.index = start;
-
-                        // yes, this is the exact same as below but it's not worth making a function imo
-                        let Some(duration) = state.duration(start) else {
-                            error!(
-                                "Frame {start} does not have duration for state {}",
-                                state_name.0
-                            );
-                            continue;
-                        };
-
-                        if timer.times_finished_this_tick() > 1 {
-                            debug!(
-                                "Dynastes missed {} frames",
-                                timer.times_finished_this_tick()
-                            );
-                        }
-
-                        timer.set_duration(Duration::from_millis(duration));
-                    }
+                if !timer.just_finished() {
+                    return None;
                 }
-                NextFrame::FrameIndex(index) => {
-                    atlas.index = index;
-                    let Some(duration) = state.duration(index) else {
-                        error!(
-                            "Frame {index} does not have duration for state {}",
-                            state_name.0
-                        );
-                        continue;
-                    };
 
-                    timer.set_duration(Duration::from_millis(duration));
+                if timer.times_finished_this_tick() > 1 {
+                    debug!(
+                        "Dynastes missed {} frames",
+                        timer.times_finished_this_tick()
+                    );
                 }
-            }
-        }
-    }
+
+                state_system.set_next_frame(
+                    &mut state_name,
+                    &mut state_control,
+                    &state_machine.edges,
+                    &mut sprite,
+                    &mut timer,
+                )
+            },
+        )
+        .collect();
 }
+
+// fn run_animation<S, T>() {}
 
 fn render_on_load<S, M>(
     mut commands: Commands,
@@ -216,6 +142,7 @@ fn render_on_load<S, M>(
         commands.entity(entity).insert((
             Sprite::from_atlas_image(metadata.image().clone(), state_info.atlas().clone()),
             StateName(state_machine.default_state_name.clone()),
+            StateControl { new_state: None },
             AnimationTimer(Timer::new(
                 Duration::from_millis(first_duration),
                 TimerMode::Repeating,
