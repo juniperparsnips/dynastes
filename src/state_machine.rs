@@ -13,9 +13,6 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 #[derive(Component, Deref, DerefMut)]
-pub struct StateName(pub String);
-
-#[derive(Component, Deref, DerefMut)]
 pub struct AnimationTimer(pub Timer);
 
 #[derive(Debug, Component, Asset, Reflect)]
@@ -142,7 +139,8 @@ where
 
 #[derive(Debug, Clone, Component)]
 pub struct StateControl {
-    pub new_state: Option<SetState>,
+    pub current_state: String,
+    pub requested_state: Option<SetState>,
 }
 
 #[derive(Debug, Clone)]
@@ -213,7 +211,7 @@ pub trait StateSystem {
         &self,
         next_state_name: &str,
         sprite: &mut Sprite,
-        active_state_name: &mut StateName,
+        active_state_name: &mut String,
         timer: &mut AnimationTimer,
     ) -> Option<()> {
         trace!("Next state: {next_state_name}");
@@ -233,7 +231,7 @@ pub trait StateSystem {
         new_atlas.index = first;
 
         sprite.texture_atlas = Some(new_atlas);
-        active_state_name.0 = next_state_name.to_string();
+        *active_state_name = next_state_name.to_string();
         timer.0 = Timer::new(Duration::from_millis(first_duration), TimerMode::Repeating);
 
         Some(())
@@ -241,16 +239,15 @@ pub trait StateSystem {
 
     fn set_next_frame(
         &self,
-        active_state_name: &mut StateName,
         state_control: &mut StateControl,
         edges: &HashMap<String, Option<String>>,
         sprite: &mut Sprite,
         timer: &mut AnimationTimer,
     ) -> Option<()> {
-        let state = self.state(&active_state_name.0).or_else(|| {
+        let state = self.state(&state_control.current_state).or_else(|| {
             error!(
                 "Dynastes does not have current state {}",
-                active_state_name.0
+                state_control.current_state
             );
             None
         })?;
@@ -259,31 +256,44 @@ pub trait StateSystem {
             None
         })?;
 
-        match (state.next_frame(atlas), &state_control.new_state.clone()) {
+        match (
+            state.next_frame(atlas),
+            &state_control.requested_state.clone(),
+        ) {
             (_, Some(SetState::Immediate(next_state))) => {
-                state_control.new_state = None;
+                state_control.requested_state = None;
                 trace!("Immediately switching to set next state {next_state}");
-                self.start_new_state(next_state, sprite, active_state_name, timer)?;
+                self.start_new_state(next_state, sprite, &mut state_control.current_state, timer)?;
             }
             (NextFrame::NextState, Some(SetState::OnTransition(overriden_next))) => {
                 trace!("Switching to overridden next state {overriden_next}");
-                state_control.new_state = None;
-                self.start_new_state(overriden_next, sprite, active_state_name, timer)?;
+                state_control.requested_state = None;
+                self.start_new_state(
+                    overriden_next,
+                    sprite,
+                    &mut state_control.current_state,
+                    timer,
+                )?;
             }
             (NextFrame::NextState, _) => {
-                let edge = edges.get(&active_state_name.0).or_else(|| {
+                let edge = edges.get(&state_control.current_state).or_else(|| {
                     error!(
                         "Dynastes did not have edge for state {}",
-                        active_state_name.0
+                        state_control.current_state
                     );
                     None
                 })?;
 
                 if let Some(next_state_name) = edge {
                     trace!("Switching to default next state {next_state_name}");
-                    self.start_new_state(next_state_name, sprite, active_state_name, timer)?;
+                    self.start_new_state(
+                        next_state_name,
+                        sprite,
+                        &mut state_control.current_state,
+                        timer,
+                    )?;
                 } else {
-                    trace!("Repeat state: {}", active_state_name.0);
+                    trace!("Repeat state: {}", state_control.current_state);
                     state.set_frame(state.first(), atlas, timer)?;
                 }
             }

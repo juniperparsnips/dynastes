@@ -53,7 +53,6 @@ fn run_animations<S, T>(
     time: Res<Time>,
     mut query: Query<(
         &Dynastes<T>,
-        &mut StateName,
         &mut StateControl,
         &mut AnimationTimer,
         &mut Sprite,
@@ -66,40 +65,37 @@ fn run_animations<S, T>(
 {
     let _: Vec<()> = query
         .iter_mut()
-        .filter_map(
-            |(dynastes, mut state_name, mut state_control, mut timer, mut sprite)| {
-                let state_machine = state_machines.get(&dynastes.0).or_else(|| {
-                    error!("Dynastes state machine '{:?}' is not loaded!", dynastes.0);
-                    None
-                })?;
+        .filter_map(|(dynastes, mut state_control, mut timer, mut sprite)| {
+            let state_machine = state_machines.get(&dynastes.0).or_else(|| {
+                error!("Dynastes state machine '{:?}' is not loaded!", dynastes.0);
+                None
+            })?;
 
-                let state_system = state_systems.get(&state_machine.states).or_else(|| {
-                    debug!("State system is not loaded");
-                    None
-                })?;
+            let state_system = state_systems.get(&state_machine.states).or_else(|| {
+                debug!("State system is not loaded");
+                None
+            })?;
 
-                timer.tick(time.delta());
+            timer.tick(time.delta());
 
-                if !timer.just_finished() {
-                    return None;
-                }
+            if !timer.just_finished() {
+                return None;
+            }
 
-                if timer.times_finished_this_tick() > 1 {
-                    debug!(
-                        "Dynastes missed {} frames",
-                        timer.times_finished_this_tick()
-                    );
-                }
+            if timer.times_finished_this_tick() > 1 {
+                debug!(
+                    "Dynastes missed {} frames",
+                    timer.times_finished_this_tick()
+                );
+            }
 
-                state_system.set_next_frame(
-                    &mut state_name,
-                    &mut state_control,
-                    &state_machine.edges,
-                    &mut sprite,
-                    &mut timer,
-                )
-            },
-        )
+            state_system.set_next_frame(
+                &mut state_control,
+                &state_machine.edges,
+                &mut sprite,
+                &mut timer,
+            )
+        })
         .collect();
 }
 
@@ -141,8 +137,10 @@ fn render_on_load<S, M>(
 
         commands.entity(entity).insert((
             Sprite::from_atlas_image(metadata.image().clone(), state_info.atlas().clone()),
-            StateName(state_machine.default_state_name.clone()),
-            StateControl { new_state: None },
+            StateControl {
+                current_state: state_machine.default_state_name.clone(),
+                requested_state: None,
+            },
             AnimationTimer(Timer::new(
                 Duration::from_millis(first_duration),
                 TimerMode::Repeating,
